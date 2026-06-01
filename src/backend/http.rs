@@ -290,12 +290,28 @@ impl HttpBackend {
 
         // For raw files, find the actual filename in the cache directory
         let cache_path = self.cache_path(cache_key);
-        for entry in xx::file::ls(&cache_path).unwrap_or_default() {
+        let entries: Vec<PathBuf> = xx::file::ls(&cache_path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| {
+                e.file_name()
+                    .map(|n| n.to_string_lossy() != METADATA_FILE)
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        // For compressed binaries: if the cache contains any directories or more than one
+        // non-metadata entry, the original extraction detected a tar archive inside the
+        // compressed stream and extracted it — treat the cache hit as an Archive.
+        if file_info.is_compressed_binary
+            && (entries.iter().any(|e| e.is_dir()) || entries.len() > 1)
+        {
+            return ExtractionType::Archive;
+        }
+
+        for entry in &entries {
             if let Some(name) = entry.file_name().map(|n| n.to_string_lossy().to_string()) {
-                // Skip metadata file
-                if name != METADATA_FILE {
-                    return ExtractionType::RawFile { filename: name };
-                }
+                return ExtractionType::RawFile { filename: name };
             }
         }
 
@@ -303,6 +319,26 @@ impl HttpBackend {
         ExtractionType::RawFile {
             filename: self.ba.tool_name.clone(),
         }
+    }
+
+    /// Returns true when a compressed-binary cache entry is stale because the cached file
+    /// is itself a tar archive — written by an older mise version that placed the raw
+    /// decompressed tar blob into the cache without extracting it.
+    fn is_stale_compressed_binary_cache(&self, cache_key: &str, file_info: &FileInfo) -> bool {
+        if !file_info.is_compressed_binary {
+            return false;
+        }
+        let cache_path = self.cache_path(cache_key);
+        let non_meta: Vec<PathBuf> = xx::file::ls(&cache_path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| {
+                e.file_name()
+                    .map(|n| n.to_string_lossy() != METADATA_FILE)
+                    .unwrap_or(false)
+            })
+            .collect();
+        non_meta.len() == 1 && non_meta[0].is_file() && file::is_tar_archive(&non_meta[0])
     }
 
     // -------------------------------------------------------------------------
@@ -777,7 +813,9 @@ impl Backend for HttpBackend {
         // On cache hit, we need to detect the actual filename from the cache (which may differ
         // from current options if a previous extraction used different `bin` name)
         ctx.pr.next_operation();
-        let extraction_type = if self.is_cached(&cache_key) {
+        let extraction_type = if self.is_cached(&cache_key)
+            && !self.is_stale_compressed_binary_cache(&cache_key, &file_info)
+        {
             ctx.pr.set_message("using cached tarball".into());
             // Report extraction operation as complete (instant since we're using cache)
             ctx.pr.set_length(1);

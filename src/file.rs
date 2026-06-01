@@ -1061,7 +1061,7 @@ pub fn untar(archive: &Path, dest: &Path, opts: &TarOptions) -> Result<()> {
         if let Some(parent) = out_path.parent() {
             create_dir_all(parent).wrap_err_with(err)?;
         }
-        std::fs::copy(&tmp_path, &out_path).wrap_err_with(err)?;
+        move_file(&tmp_path, &out_path).wrap_err_with(err)?;
         return Ok(());
     }
 
@@ -1162,7 +1162,7 @@ fn open_tar(format: TarFormat, archive: &Path) -> Result<Box<dyn std::io::Read>>
 
 /// Checks whether the given file is a tar archive by looking for the "ustar" magic
 /// string at byte offset 257 in the first 512-byte header block.
-fn is_tar_archive(path: &Path) -> bool {
+pub(crate) fn is_tar_archive(path: &Path) -> bool {
     let Ok(mut f) = File::open(path) else {
         return false;
     };
