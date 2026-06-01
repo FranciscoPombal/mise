@@ -400,8 +400,20 @@ impl HttpBackend {
             },
         )?;
 
-        file::make_executable(&dest_file)?;
-        Ok(ExtractionType::RawFile { filename })
+        if dest_file.is_dir() {
+            // untar() detected a tar archive inside the compressed file and extracted
+            // its contents into dest_file as a directory — treat as an archive extraction
+            // Move contents up to dest
+            for entry in std::fs::read_dir(&dest_file)?.flatten() {
+                let target = dest.join(entry.file_name());
+                std::fs::rename(entry.path(), &target)?;
+            }
+            std::fs::remove_dir(&dest_file)?;
+            Ok(ExtractionType::Archive)
+        } else {
+            file::make_executable(&dest_file)?;
+            Ok(ExtractionType::RawFile { filename })
+        }
     }
 
     /// Extract a raw (uncompressed) file

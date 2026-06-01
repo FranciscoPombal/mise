@@ -444,7 +444,20 @@ pub fn install_artifact(
             },
         )?;
 
-        file::make_executable(&dest)?;
+        if dest.is_dir() {
+            // untar() detected a tar archive inside the compressed file and extracted
+            // its contents into dest as a directory — make all files executable
+            if let Ok(entries) = std::fs::read_dir(&dest) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        file::make_executable(&path)?;
+                    }
+                }
+            }
+        } else {
+            file::make_executable(&dest)?;
+        }
     } else if format == file::TarFormat::Raw {
         // Copy the file directly to the bin_path directory or install_path
         if let Some(bin_path_template) = lookup_with_fallback(opts, "bin_path") {
