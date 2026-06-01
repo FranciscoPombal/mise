@@ -1171,7 +1171,8 @@ pub(crate) fn is_tar_archive(path: &Path) -> bool {
         return false;
     }
     // POSIX tar archives have "ustar\0" at offset 257, GNU tar has "ustar "
-    &header[257..263] == b"ustar\0" || &header[257..263] == b"ustar "
+    let ustar_field = &header[257..263];
+    ustar_field == b"ustar\0" || ustar_field == b"ustar "
 }
 
 fn strip_archive_path_components(dir: &Path, strip_depth: usize) -> Result<()> {
