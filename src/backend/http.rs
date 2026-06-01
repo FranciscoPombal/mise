@@ -279,6 +279,19 @@ impl HttpBackend {
     // Extraction type detection
     // -------------------------------------------------------------------------
 
+    /// Returns the non-metadata entries in the given cache directory.
+    fn list_cache_entries(&self, cache_key: &str) -> Vec<PathBuf> {
+        xx::file::ls(&self.cache_path(cache_key))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| {
+                e.file_name()
+                    .map(|n| n.to_string_lossy() != METADATA_FILE)
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
     /// Detect extraction type from an existing cache directory
     /// This handles the case where a cache hit occurs but the original extraction
     /// used different options (e.g., different `bin` name)
@@ -288,17 +301,7 @@ impl HttpBackend {
             return ExtractionType::Archive;
         }
 
-        // For raw files, find the actual filename in the cache directory
-        let cache_path = self.cache_path(cache_key);
-        let entries: Vec<PathBuf> = xx::file::ls(&cache_path)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|e| {
-                e.file_name()
-                    .map(|n| n.to_string_lossy() != METADATA_FILE)
-                    .unwrap_or(false)
-            })
-            .collect();
+        let entries = self.list_cache_entries(cache_key);
 
         // For compressed binaries: if the cache contains any directories or more than one
         // non-metadata entry, the original extraction detected a tar archive inside the
@@ -328,17 +331,8 @@ impl HttpBackend {
         if !file_info.is_compressed_binary {
             return false;
         }
-        let cache_path = self.cache_path(cache_key);
-        let non_meta: Vec<PathBuf> = xx::file::ls(&cache_path)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|e| {
-                e.file_name()
-                    .map(|n| n.to_string_lossy() != METADATA_FILE)
-                    .unwrap_or(false)
-            })
-            .collect();
-        non_meta.len() == 1 && non_meta[0].is_file() && file::is_tar_archive(&non_meta[0])
+        let entries = self.list_cache_entries(cache_key);
+        entries.len() == 1 && entries[0].is_file() && file::is_tar_archive(&entries[0])
     }
 
     // -------------------------------------------------------------------------
