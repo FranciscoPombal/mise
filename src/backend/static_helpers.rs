@@ -447,10 +447,11 @@ pub fn install_artifact(
         if dest.is_dir() {
             // untar() detected a tar archive inside the compressed file and extracted
             // its contents into dest as a directory - make all files executable
-            for entry in std::fs::read_dir(&dest)?.flatten() {
+            for entry in walkdir::WalkDir::new(&dest) {
+                let entry = entry?;
                 let path = entry.path();
                 if path.is_file() {
-                    file::make_executable(&path)?;
+                    file::make_executable(path)?;
                 }
             }
         } else {

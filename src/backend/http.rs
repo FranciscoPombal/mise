@@ -404,7 +404,8 @@ impl HttpBackend {
             // untar() detected a tar archive inside the compressed file and extracted
             // its contents into dest_file as a directory — treat as an archive extraction
             // Move contents up to dest
-            for entry in std::fs::read_dir(&dest_file)?.flatten() {
+            for entry in std::fs::read_dir(&dest_file)? {
+                let entry = entry?;
                 let target = dest.join(entry.file_name());
                 std::fs::rename(entry.path(), &target)?;
             }

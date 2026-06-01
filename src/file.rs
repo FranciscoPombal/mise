@@ -1170,8 +1170,8 @@ fn is_tar_archive(path: &Path) -> bool {
     if f.read_exact(&mut header).is_err() {
         return false;
     }
-    // POSIX tar archives have "ustar" at offset 257
-    &header[257..262] == b"ustar"
+    // POSIX tar archives have "ustar\0" at offset 257, GNU tar has "ustar "
+    &header[257..263] == b"ustar\0" || &header[257..263] == b"ustar "
 }
 
 fn strip_archive_path_components(dir: &Path, strip_depth: usize) -> Result<()> {
