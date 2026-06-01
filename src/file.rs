@@ -1021,8 +1021,34 @@ pub fn untar(archive: &Path, dest: &Path, opts: &TarOptions) -> Result<()> {
     let format = opts.format;
     if !format.is_archive() && format != TarFormat::Raw {
         let mut reader = open_tar(format, archive)?;
-        // If dest is a directory, join with the archive filename (minus extension)
-        // If dest is not a dir, assume it's the target file path
+
+        // Decompress to a temporary file so we can inspect the content
+        let tmp_dir = tempfile::tempdir().wrap_err_with(err)?;
+        let tmp_path = tmp_dir.path().join("decompressed");
+        {
+            let mut tmp_file = File::create(&tmp_path).wrap_err_with(err)?;
+            std::io::copy(&mut reader, &mut tmp_file).wrap_err_with(err)?;
+        }
+
+        // Check if the decompressed content is a tar archive by looking for
+        // the "ustar" magic at offset 257 in the first 512-byte header block
+        if is_tar_archive(&tmp_path) {
+            // The decompressed content is a tar archive — extract it into dest as a directory
+            debug!(
+                "Detected tar archive inside compressed file {}, extracting as tar",
+                archive.display()
+            );
+            create_dir_all(dest).wrap_err_with(err)?;
+            let tar_opts = TarOptions {
+                format: TarFormat::Tar,
+                strip_components: opts.strip_components,
+                pr: opts.pr,
+                preserve_mtime: opts.preserve_mtime,
+            };
+            return untar(&tmp_path, dest, &tar_opts);
+        }
+
+        // Not a tar archive — write as a single decompressed binary
         let out_path = if dest.is_dir() {
             let name = archive
                 .file_stem()
@@ -1035,8 +1061,7 @@ pub fn untar(archive: &Path, dest: &Path, opts: &TarOptions) -> Result<()> {
         if let Some(parent) = out_path.parent() {
             create_dir_all(parent).wrap_err_with(err)?;
         }
-        let mut out = File::create(&out_path).wrap_err_with(err)?;
-        std::io::copy(&mut reader, &mut out).wrap_err_with(err)?;
+        move_file(&tmp_path, &out_path).wrap_err_with(err)?;
         return Ok(());
     }
 
@@ -1133,6 +1158,21 @@ fn open_tar(format: TarFormat, archive: &Path) -> Result<Box<dyn std::io::Read>>
         TarFormat::Zip => bail!("zip format not supported"),
         TarFormat::SevenZip => bail!("7z format not supported"),
     })
+}
+
+/// Checks whether the given file is a tar archive by looking for the "ustar" magic
+/// string at byte offset 257 in the first 512-byte header block.
+pub(crate) fn is_tar_archive(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 512];
+    if f.read_exact(&mut header).is_err() {
+        return false;
+    }
+    // POSIX tar archives have "ustar\0" at offset 257, GNU tar has "ustar "
+    let ustar_field = &header[257..263];
+    ustar_field == b"ustar\0" || ustar_field == b"ustar "
 }
 
 fn strip_archive_path_components(dir: &Path, strip_depth: usize) -> Result<()> {
@@ -1982,6 +2022,128 @@ mod tests {
         assert!(expected_path.is_file());
         let content = std::fs::read_to_string(&expected_path).unwrap();
         assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn test_untar_gz_containing_tar() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let src_path = dir.path().join("tool-v1.0-linux.gz");
+        let dest_path = dir.path().join("output");
+
+        // Create a tar archive containing a single file "my_binary"
+        let mut tar_buf = Vec::new();
+        {
+            let mut tar_builder = tar::Builder::new(&mut tar_buf);
+            let content = b"#!/bin/sh\necho hello";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            tar_builder
+                .append_data(&mut header, "my_binary", &content[..])
+                .unwrap();
+            tar_builder.finish().unwrap();
+        }
+
+        // Gzip the tar archive
+        let file = File::create(&src_path).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder.write_all(&tar_buf).unwrap();
+        encoder.finish().unwrap();
+
+        // untar should detect the tar inside and extract it as a directory
+        untar(
+            &src_path,
+            &dest_path,
+            &TarOptions {
+                pr: None,
+                ..TarOptions::new(TarFormat::Gz)
+            },
+        )
+        .unwrap();
+
+        // dest_path should be a directory containing "my_binary"
+        assert!(dest_path.is_dir());
+        let binary_path = dest_path.join("my_binary");
+        assert!(binary_path.exists());
+        assert!(binary_path.is_file());
+        let content = std::fs::read(&binary_path).unwrap();
+        assert_eq!(content, b"#!/bin/sh\necho hello");
+    }
+
+    #[test]
+    fn test_untar_gz_containing_plain_binary() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let src_path = dir.path().join("tool.gz");
+        let dest_path = dir.path().join("tool-out");
+
+        // Create a gzip file with plain binary content (not a tar)
+        let binary_content = b"\x7fELF fake binary content here";
+        let file = File::create(&src_path).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder.write_all(binary_content).unwrap();
+        encoder.finish().unwrap();
+
+        // untar should treat it as a plain decompressed binary
+        untar(
+            &src_path,
+            &dest_path,
+            &TarOptions {
+                pr: None,
+                ..TarOptions::new(TarFormat::Gz)
+            },
+        )
+        .unwrap();
+
+        // dest_path should be a file (not a directory)
+        assert!(dest_path.is_file());
+        let content = std::fs::read(&dest_path).unwrap();
+        assert_eq!(content, binary_content);
+    }
+
+    #[test]
+    fn test_is_tar_archive() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+
+        // Create a proper tar archive
+        let tar_path = dir.path().join("test.tar");
+        {
+            let file = File::create(&tar_path).unwrap();
+            let mut tar_builder = tar::Builder::new(file);
+            let content = b"test content";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar_builder
+                .append_data(&mut header, "testfile", &content[..])
+                .unwrap();
+            tar_builder.finish().unwrap();
+        }
+        assert!(is_tar_archive(&tar_path));
+
+        // Create a non-tar file
+        let non_tar_path = dir.path().join("not_tar");
+        std::fs::write(&non_tar_path, b"this is just plain text, not a tar archive at all")
+            .unwrap();
+        assert!(!is_tar_archive(&non_tar_path));
+
+        // Create a file too small to be a tar
+        let small_path = dir.path().join("small");
+        std::fs::write(&small_path, b"tiny").unwrap();
+        assert!(!is_tar_archive(&small_path));
     }
 
     #[tokio::test]
