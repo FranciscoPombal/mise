@@ -446,13 +446,11 @@ pub fn install_artifact(
 
         if dest.is_dir() {
             // untar() detected a tar archive inside the compressed file and extracted
-            // its contents into dest as a directory — make all files executable
-            if let Ok(entries) = std::fs::read_dir(&dest) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        file::make_executable(&path)?;
-                    }
+            // its contents into dest as a directory - make all files executable
+            for entry in std::fs::read_dir(&dest)?.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    file::make_executable(&path)?;
                 }
             }
         } else {
